@@ -1,0 +1,221 @@
+---
+title: "CFP Transfer Portal"
+author: "Luke Chandler"
+date: "2026-02-13"
+output:
+  ioslides_presentation:
+    widescreen: true
+    smaller: true
+---
+<style>
+pre {
+  font-size: 14px !important;
+  line-height: 1.5 !important;
+  
+  
+  margin-left: 0px !important;  
+  padding-left: 15px !important; 
+  
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(plotly)
+library(ggplot2)
+library(tidyverse)
+library(caret)
+library(randomForest)
+
+data <- read.csv("CFB_Portal_Data.csv")
+```
+
+```{r}
+team_colors <- c(
+  "Georgia" = "#BA0C2F",     # Bulldog Red
+  "Alabama" = "#9E1B32",     # Crimson
+  "Ohio State" = "#BB0000",  # Scarlet
+  "LSU" = "#461D7C",         # Purple
+  "USC" = "#990000",         # Cardinal
+  "Miami" = "#F47321",       # Orange
+  "Michigan" = "#00274C",    # Blue
+  "Notre Dame" = "#0C2340",  # Navy
+  "Texas" = "#BF5700",       # Burnt Orange
+  "Ole Miss" = "#CE1126"     # Red
+)
+```
+
+
+## Intro and Goal
+
+  We will be looking at the College Football Transfer Portal, it is current as of 2023. 
+
+  Every year, more and more players enter the transfer portal in hopes of obtaining a starting position, earning more money, etc.
+
+  My goal is to see if we can build a model that can predict whether a a player will transfer to a Powerhouse program or not, as well as determine what factors strongly contribute to a transfer decision. 
+  
+
+## Portal Data
+
+This dataset shows us every player that entered the transfer portal in a particular season. It gives us their position, name, original school, destination school (if decided), and more. 
+
+```{r, echo=TRUE}
+head(data)
+```
+
+## Large Number of Undecided Athletes
+
+A majority of athletes, haven't decided where to commit, we filter them out so our model won't have trouble. 
+
+```{r, echo=TRUE, fig.height = 3, out.width = "60%"}
+top <- data %>%
+  count(destination) %>%
+  slice_max(n, n=5)
+ggplot(top, aes(x = reorder(destination, n), y = n)) + geom_col() + coord_flip() +
+  labs(x = "", y = "Number of Commits")
+```
+
+## Top 5 Schools
+Here is the new dataset, with the 5 schools who received the most transfers. Texas State leads the way. 
+
+```{r, echo=TRUE, fig.height = 3, out.width="60%"}
+top <- data %>%
+  filter(!is.na(destination)) %>%
+  filter(nchar(as.character(destination)) > 1) %>%
+  count(destination) %>%
+  slice_max(n, n=5)
+
+ggplot(top, aes(x = reorder(destination, n), y = n,)) + geom_col() + coord_flip() + labs(x = "", y = "Number of Commits")
+```
+
+## Filter for Quality of Players
+The following code filters for non-NULL values within the Top 5 schools. The average stars of transfer athletes for each school is shown in next slide. 
+```{r, echo=TRUE}
+schools <- c("Texas State", "Colorado", "SMU", "UMass", "Arizona State")
+
+topschools <- data %>%
+  filter(destination %in% schools) %>%
+  filter(!is.na(stars))
+```
+## Average stars for The Top 5 Transfer Schools
+The average for each school is highlighted in Red. These schools don't have the highest rated recruits. Texas State average 2.7 stars. 
+```{r, echo=TRUE, fig.height=4, out.width = "50%"}
+ggplot(topschools, aes(x = destination, y = stars)) +
+  geom_jitter(width = 0.1, alpha = 0.6) +
+  stat_summary(fun = mean, geom = "point", shape = 18, size = 4, color = "red") +
+  coord_flip() +
+  labs(x = "", y = "Avg Stars")
+```
+
+## Who has the Highest Rated Recruits?
+Now let's look at who has the highest rated recruits, this might give us a better sample to predict. 
+```{r, echo=TRUE, fig.height = 4, out.width="50%"}
+toprated <- data %>%
+  filter(!is.na(stars)) %>% group_by(destination) %>%
+  summarise( avg_rating = mean(stars), commits= n()) %>%
+  filter(commits >= 5) %>% slice_max(avg_rating, n = 10) %>%
+  head(5)
+ggplot(toprated, aes(x = reorder(destination, avg_rating), y = avg_rating, fill=destination))+ geom_col() + scale_fill_manual(values = team_colors) + coord_flip() + labs(x="", y="Avg Stars")
+```
+
+## Target Variable - PowerHouse Schools
+Now that we know what schools have the highest rating, we can create a target variable.
+```{r, echo=TRUE}
+model_data <- data %>%
+  filter(!is.na(stars) & !is.na(destination))
+
+power_schools <- c("Alabama", "Georgia", "Ohio State", "Michigan", "Texas", "USC", "LSU", "Oklahoma", "Oregon", "Notre Dame",
+"Ole Miss", "Auburn", "Florida", "Tennessee", 
+"Penn State", "Texas A&M")
+```
+
+
+
+## Building Model
+We adjust the variables so that they can fit the logistic regression model by converting values and formatting. 
+```{r, echo=TRUE}
+model_data <- model_data %>%
+  mutate(
+    Is_Powerhouse = ifelse(destination %in% power_schools, 1, 0),
+    Origin_Type = ifelse(origin %in% power_schools, "From Power 4", "From Mid-Major"),
+    Position = ifelse(position %in% c("QB","WR","RB","TE","OL","DL","LB","DB","CB","S"), 
+                      position, "Other")
+  )
+scoreModel <- glm(Is_Powerhouse ~ stars + Origin_Type + position, 
+                  data = model_data, 
+                  family = "binomial")
+impact_scores <- as.data.frame(summary(scoreModel)$coefficients)
+impact_scores$Variable <- rownames(impact_scores)
+colnames(impact_scores)[1] <- "Impact"
+```
+
+## Setting Impact Scores
+```{r,echo=TRUE}
+impact_scores <- impact_scores %>% 
+  filter(Variable != "(Intercept)") %>%
+  mutate(Variable = gsub("position", "", Variable)) %>%
+  mutate(Variable = gsub("Origin_Type", "", Variable)) %>%
+  arrange(Impact)
+```
+## Strongest Contributing Factors
+The strongest contributing factors are stars and certain positions on the field. Punter being the greatest, due to the scarcity at the position.
+```{r,echo=TRUE, fig.height=4, out.width="60%"}
+ggplot(impact_scores, aes(x = reorder(Variable, Impact), y = Impact, fill = Impact > 0)) + geom_col() + coord_flip() +
+  scale_fill_manual(values = c("firebrick", "forestgreen"), labels = c("Hurts Chances", "Helps Chances")) +
+  geom_hline(yintercept = 0, color = "black") +
+  labs(title = "What Drives a Transfer to a Powerhouse?", x = NULL, y = "Impact Score")
+```
+
+## Predicting Transfer Decision
+```{r, echo=TRUE}
+new_player <- data.frame(
+  stars = 3,                      
+  Origin_Type = "From Mid-Major",   
+  eligibility = "Immediate",
+  position = "CB"
+)
+prob <- predict(scoreModel, new_player, type = "response")
+print(paste("Player Profile:", new_player$stars, "Star", new_player$position,",", new_player$Origin_Type))
+print(paste("Probability of Powerhouse Destination:", round(prob * 100, 1), "%"))
+```
+We see that a 3-star CB Recruit from a Mid-Major conference has a very low percentage of transferring to a PowerHouse School.
+
+## Predicting - Different Inputs
+```{r, echo=TRUE}
+new_player <- data.frame(
+  stars = 4,                      
+  Origin_Type = "From Power 4",   
+  eligibility = "Immediate",
+  position = "P"
+)
+prob <- predict(scoreModel, new_player, type = "response")
+print(paste("Player Profile:", new_player$stars, "Star", new_player$position,",", new_player$Origin_Type))
+print(paste("Probability of Powerhouse Destination:", round(prob * 100, 1), "%"))
+```
+4-star Punter from Power 4 has an 81% chance they transfer to a PowerHouse School. 
+
+## Model Accuracy
+Lastly we find the model accuracy: 
+```{r, echo=TRUE}
+probs <- predict(scoreModel, type = "response")
+predictions <- ifelse(probs > 0.5, 1, 0)
+accuracy <- mean(predictions == model_data$Is_Powerhouse)
+table(Predicted = predictions, Actual = model_data$Is_Powerhouse)
+print(paste("Total Model Accuracy:", round(accuracy * 100, 1), "%"))
+```
+93% accuracy is not a bad start. This model is pretty reliable, and the more data we add, the better it will get. 
+
+## Conclusion
+We found that the strongest factors that influence a transfer decision were:
+
+-Position
+<br>
+-Star Rating 
+
+Using those factors, we were able to predict the probability of a player in the portal transferring to a Power 4 Conference or not. All with a 93% accuracy score! This model could help coaching staff know who to target based on what conference they're in and where the player's origin is. It helps identify trade-offs. A non Power 4 school may be able to recruit higher rated players from certain positions. Depending on the factors, they may have to settle for lower stars.
+<br>
+<br>
+<br>
+Data was taken from https://www.kaggle.com/datasets/dubradave/college-football-portal-and-recruiting-statistics?resource=download
+<br> 
+Author: dubradave
